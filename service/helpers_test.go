@@ -25,7 +25,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	""
 	"code.surgemq.com/messages"
 	"code.surgemq.com/sessions"
 	"code.surgemq.com/topics"
