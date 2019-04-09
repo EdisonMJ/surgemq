@@ -4,8 +4,8 @@ Standalone SurgeMQ server, creates listeners for plaintext MQTT, Websocket and S
 
 ## Build
 
-* `go get github.com/surgemq/surgemq`
-* `cd $GOPATH/src/github.com/surgemq/surgemq/examples/surgemq/`
+* `go get github.com/EdisonMJ/surgemq`
+* `cd $GOPATH/src/github.com/EdisonMJ/surgemq/examples/surgemq/`
 * `go build`
 
 ## Usage
