@@ -15,6 +15,8 @@
 package service
 
 import (
+	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -24,9 +26,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/EdisonMJ/surgemq/auth"
 	"github.com/EdisonMJ/surgemq/glog"
 	"github.com/EdisonMJ/surgemq/message"
-	"github.com/EdisonMJ/surgemq/auth"
 	"github.com/EdisonMJ/surgemq/sessions"
 	"github.com/EdisonMJ/surgemq/topics"
 )
@@ -133,6 +135,81 @@ func (this *Server) ListenAndServe(uri string) error {
 	}
 
 	this.ln, err = net.Listen(u.Scheme, u.Host)
+	if err != nil {
+		return err
+	}
+	defer this.ln.Close()
+
+	glog.Infof("server/ListenAndServe: server is ready...")
+
+	var tempDelay time.Duration // how long to sleep on accept failure
+
+	for {
+		conn, err := this.ln.Accept()
+
+		if err != nil {
+			// http://zhen.org/blog/graceful-shutdown-of-go-net-dot-listeners/
+			select {
+			case <-this.quit:
+				return nil
+
+			default:
+			}
+
+			// Borrowed from go1.3.3/src/pkg/net/http/server.go:1699
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if max := 1 * time.Second; tempDelay > max {
+					tempDelay = max
+				}
+				glog.Errorf("server/ListenAndServe: Accept error: %v; retrying in %v", err, tempDelay)
+				time.Sleep(tempDelay)
+				continue
+			}
+			return err
+		}
+
+		go this.handleConnection(conn)
+	}
+}
+
+// ListenAndServe listents to connections on the URI requested, and handles any
+// incoming MQTT client sessions. It should not return until Close() is called
+// or if there's some critical error that stops the server from running. The URI
+// supplied should be of the form "protocol://host:port" that can be parsed by
+// url.Parse(). For example, an URI could be "tcp://0.0.0.0:1883".
+func (this *Server) ListenAndServeTLS(uri string) error {
+	defer atomic.CompareAndSwapInt32(&this.running, 1, 0)
+
+	if !atomic.CompareAndSwapInt32(&this.running, 0, 1) {
+		return fmt.Errorf("server/ListenAndServeTLS: Server is already running")
+	}
+
+	this.quit = make(chan struct{})
+
+	u, err := url.Parse(uri)
+	if err != nil {
+		return err
+	}
+	crt, err := tls.LoadX509KeyPair("server.crt", "server.key")
+	if err != nil {
+		return err
+	}
+	tlsConfig := new(tls.Config)
+	tlsConfig.Certificates = []tls.Certificate{crt}
+	// Time returns the current time as the number of seconds since the epoch.
+	// If Time is nil, TLS uses time.Now.
+	tlsConfig.Time = time.Now
+	// Rand provides the source of entropy for nonces and RSA blinding.
+	// If Rand is nil, TLS uses the cryptographic random reader in package
+	// crypto/rand.
+	// The Reader must be safe for use by multiple goroutines.
+	tlsConfig.Rand = rand.Reader
+	this.ln, err = tls.Listen(u.Scheme, u.Host, tlsConfig)
 	if err != nil {
 		return err
 	}
