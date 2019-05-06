@@ -15,6 +15,8 @@
 package service
 
 import (
+	"crypto/rand"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/url"
@@ -70,12 +72,108 @@ func (this *Client) Connect(uri string, msg *message.ConnectMessage) (err error)
 	if u.Scheme != "tcp" {
 		return ErrInvalidConnectionType
 	}
-
 	conn, err := net.Dial(u.Scheme, u.Host)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			conn.Close()
+		}
+	}()
 
+	if msg.KeepAlive() < minKeepAlive {
+		msg.SetKeepAlive(minKeepAlive)
+	}
+
+	if err = writeMessage(conn, msg); err != nil {
+		return err
+	}
+
+	conn.SetReadDeadline(time.Now().Add(time.Second * time.Duration(this.ConnectTimeout)))
+
+	resp, err := getConnackMessage(conn)
+	if err != nil {
+		return err
+	}
+
+	if resp.ReturnCode() != message.ConnectionAccepted {
+		return resp.ReturnCode()
+	}
+
+	this.svc = &service{
+		id:     atomic.AddUint64(&gsvcid, 1),
+		client: true,
+		conn:   conn,
+
+		keepAlive:      int(msg.KeepAlive()),
+		connectTimeout: this.ConnectTimeout,
+		ackTimeout:     this.AckTimeout,
+		timeoutRetries: this.TimeoutRetries,
+	}
+
+	err = this.getSession(this.svc, msg, resp)
+	if err != nil {
+		return err
+	}
+
+	p := topics.NewMemProvider()
+	topics.Register(this.svc.sess.ID(), p)
+
+	this.svc.topicsMgr, err = topics.NewManager(this.svc.sess.ID())
+	if err != nil {
+		return err
+	}
+
+	if err := this.svc.start(); err != nil {
+		this.svc.stop()
+		return err
+	}
+
+	this.svc.inStat.increment(int64(msg.Len()))
+	this.svc.outStat.increment(int64(resp.Len()))
+
+	return nil
+}
+
+// Connect is for MQTT clients to open a connection to a remote server. It needs to
+// know the URI, e.g., "tcp://127.0.0.1:1883", so it knows where to connect to. It also
+// needs to be supplied with the MQTT CONNECT message.
+func (this *Client) ConnectTls(uri, srvc, srvk string, msg *message.ConnectMessage) (err error) {
+	this.checkConfiguration()
+
+	if msg == nil {
+		return fmt.Errorf("msg is nil")
+	}
+
+	u, err := url.Parse(uri)
+	if err != nil {
+		return err
+	}
+
+	if u.Scheme != "tcp" {
+		return ErrInvalidConnectionType
+	}
+	crt, err := tls.LoadX509KeyPair(srvc, srvk)
+	if err != nil {
+		return err
+	}
+	tlsConfig := new(tls.Config)
+	tlsConfig.Certificates = []tls.Certificate{crt}
+	// Time returns the current time as the number of seconds since the epoch.
+	// If Time is nil, TLS uses time.Now.
+	tlsConfig.Time = time.Now
+	// Rand provides the source of entropy for nonces and RSA blinding.
+	// If Rand is nil, TLS uses the cryptographic random reader in package
+	// crypto/rand.
+	// The Reader must be safe for use by multiple goroutines.
+	tlsConfig.Rand = rand.Reader
+	//验证服务器端
+	tlsConfig.InsecureSkipVerify = true
+	conn, err := tls.Dial(u.Scheme, u.Host, tlsConfig)
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if err != nil {
 			conn.Close()

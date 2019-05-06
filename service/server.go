@@ -182,7 +182,7 @@ func (this *Server) ListenAndServe(uri string) error {
 // or if there's some critical error that stops the server from running. The URI
 // supplied should be of the form "protocol://host:port" that can be parsed by
 // url.Parse(). For example, an URI could be "tcp://0.0.0.0:1883".
-func (this *Server) ListenAndServeTLS(uri string) error {
+func (this *Server) ListenAndServeTLS(uri, srvc, srvk string) error {
 	defer atomic.CompareAndSwapInt32(&this.running, 1, 0)
 
 	if !atomic.CompareAndSwapInt32(&this.running, 0, 1) {
@@ -195,7 +195,7 @@ func (this *Server) ListenAndServeTLS(uri string) error {
 	if err != nil {
 		return err
 	}
-	crt, err := tls.LoadX509KeyPair("server.crt", "server.key")
+	crt, err := tls.LoadX509KeyPair(srvc, srvk)
 	if err != nil {
 		return err
 	}
